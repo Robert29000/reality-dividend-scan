@@ -5,8 +5,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import requests
-
 from reality_dividends.config import (
     REMAINING_THROUGHPUT_THRESHOLD,
     RPC_PROVIDER_CONFIGS,
@@ -140,6 +138,12 @@ class RpcTests(unittest.TestCase):
         self.assertEqual(drpc_config.throttle_wait_seconds, 1.0)
         self.assertEqual(drpc_config.get_logs_batch_cu_cost(3), 60)
 
+    def test_http_provider_uses_web3_default_retries(self):
+        collector = RpcCollector(ALCHEMY_PROVIDER, "https://example.invalid")
+        self.assertIsNotNone(
+            collector.web3.provider.exception_retry_configuration
+        )
+
     def test_each_provider_uses_its_window_and_combined_topics(self):
         cases = ((ALCHEMY_PROVIDER, 81), (DRPC_PROVIDER, 2_001))
         for provider, end in cases:
@@ -229,54 +233,6 @@ class RpcTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "exceeds usable throughput 89"):
             limiter.wait(90)
-
-    def test_http_429_hard_waits_and_honors_retry_after(self):
-        fake_time = FakeTime()
-        collector = RpcCollector(
-            ALCHEMY_PROVIDER,
-            "unused",
-            web3=FakeWeb3(FakeEth(lambda params: [])),
-            sleeper=fake_time.sleep,
-            clock=fake_time.clock,
-        )
-        attempts = 0
-
-        def request():
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                response = requests.Response()
-                response.status_code = 429
-                response.headers["Retry-After"] = "2.5"
-                raise requests.HTTPError(response=response)
-            return "ok"
-
-        self.assertEqual(collector._rpc_request(5, request), "ok")
-        self.assertEqual(attempts, 2)
-        self.assertEqual(fake_time.sleeps, [2.5])
-
-    def test_429_retries_are_bounded(self):
-        fake_time = FakeTime()
-        collector = RpcCollector(
-            ALCHEMY_PROVIDER,
-            "unused",
-            web3=FakeWeb3(FakeEth(lambda params: [])),
-            sleeper=fake_time.sleep,
-            clock=fake_time.clock,
-        )
-        attempts = 0
-
-        def request():
-            nonlocal attempts
-            attempts += 1
-            response = requests.Response()
-            response.status_code = 429
-            raise requests.HTTPError(response=response)
-
-        with self.assertRaises(requests.HTTPError):
-            collector._rpc_request(5, request)
-        self.assertEqual(attempts, 6)
-        self.assertEqual(fake_time.sleeps, [1.0] * 5)
 
     def test_block_windows_cover_inclusive_range_without_gaps(self):
         for start, end, size in ((5, 5, 10), (5, 14, 10), (5, 15, 10)):

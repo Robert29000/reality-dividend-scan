@@ -49,7 +49,7 @@ Every provider JSON field is described below:
 | `throughput` | Compute units allowed during one throughput-rate period |
 | `throughput_rate_period_seconds` | Number of seconds represented by `throughput`, such as `1` for CU/s or `60` for CU/min |
 | `rate_limit_window_seconds` | Provider enforcement window used to calculate token-bucket capacity |
-| `throttle_wait_seconds` | Minimum pause when throttling, and the fallback pause after a 429 without `Retry-After` |
+| `throttle_wait_seconds` | Minimum pause when the local throughput limiter throttles a request |
 | `chain_id_cu_cost` | Compute-unit cost of `eth_chainId` |
 | `block_number_cu_cost` | Compute-unit cost of `eth_blockNumber` |
 | `get_logs_cu_cost` | Compute-unit cost of each `eth_getLogs` call |
@@ -62,10 +62,9 @@ bucket over its 10-second rolling window. `throttle_wait_seconds` is
 independent of both the throughput-rate period and rate-limit window.
 
 Before each request, the collector waits until the continuously refilling
-bucket has enough capacity while preserving the shared 10% reserve. If an HTTP
-request returns status 429, the collector hard-waits and retries up to five
-times. An HTTP `Retry-After` header takes precedence over the configured
-fallback pause.
+bucket has enough capacity while preserving the shared 10% reserve. The
+constructed HTTP provider retains Web3.py's default exception retry
+configuration.
 
 To add a provider, define its name in `constants.py`, add a JSON file under
 `configs/`, add its explicit path to `RPC_PROVIDER_CONFIG_PATHS`, add its
