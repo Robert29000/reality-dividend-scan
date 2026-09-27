@@ -48,23 +48,24 @@ Every provider JSON field is described below:
 | `log_limit` | Provider response-log cap; responses at the cap are recursively split into smaller block ranges; `null` disables splitting |
 | `throughput` | Compute units allowed during one throughput-rate period |
 | `throughput_rate_period_seconds` | Number of seconds represented by `throughput`, such as `1` for CU/s or `60` for CU/min |
-| `rate_limit_window_seconds` | Provider enforcement window used to calculate token-bucket capacity |
+| `rate_limit_window_seconds` | Rolling window during which previously consumed compute units remain charged |
 | `throttle_wait_seconds` | Minimum pause when the local throughput limiter throttles a request |
 | `chain_id_cu_cost` | Compute-unit cost of `eth_chainId` |
 | `block_number_cu_cost` | Compute-unit cost of `eth_blockNumber` |
 | `get_logs_cu_cost` | Compute-unit cost of each `eth_getLogs` call |
 | `batch_base_cu_cost` | Additional compute-unit cost charged once per batch, before member-call costs |
 
-Bucket capacity is calculated as
+Rolling-window capacity is calculated as
 `throughput / throughput_rate_period_seconds * rate_limit_window_seconds`.
-For example, Alchemy's configured 300 CU per 1 second produces a 3,000-CU
-bucket over its 10-second rolling window. `throttle_wait_seconds` is
+For example, Alchemy's configured 300 CU per 1 second permits 3,000 CU over
+its 10-second rolling window. `throttle_wait_seconds` is
 independent of both the throughput-rate period and rate-limit window.
 
-Before each request, the collector waits until the continuously refilling
-bucket has enough capacity while preserving the shared 10% reserve. The
-constructed HTTP provider retains Web3.py's default exception retry
-configuration.
+Before each request, the collector sums consumption still inside the rolling
+window while preserving the shared 10% reserve. Request costs expire only when
+their timestamps leave that window; there is no fixed reset or continuous
+refill. The constructed HTTP provider retains Web3.py's default exception
+retry configuration.
 
 To add a provider, define its name in `constants.py`, add a JSON file under
 `configs/`, add its explicit path to `RPC_PROVIDER_CONFIG_PATHS`, add its

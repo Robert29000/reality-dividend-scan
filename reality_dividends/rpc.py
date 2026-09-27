@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -53,16 +54,14 @@ class RateLimiter:
             raise ValueError("wait seconds must be positive")
 
         self.throughput = throughput
-        self.refill_units_per_second = (
-            throughput / throughput_rate_period_seconds
-        )
+        throughput_units_per_second = throughput / throughput_rate_period_seconds
         self.rate_limit_window_seconds = rate_limit_window_seconds
-        self.capacity = self.refill_units_per_second * rate_limit_window_seconds
+        self.capacity = throughput_units_per_second * rate_limit_window_seconds
         self.wait_seconds = wait_seconds
         self.sleeper = sleeper
         self.clock = clock
-        self._last_refill = self.clock()
-        self._available_units = self.capacity
+        self._consumption: deque[tuple[float, int]] = deque()
+        self._consumed_units = 0
 
     @property
     def reserve_units(self) -> float:
@@ -72,23 +71,31 @@ class RateLimiter:
     def max_request_units(self) -> int:
         return max(0, math.ceil(self.capacity - self.reserve_units) - 1)
 
-    def _refill(self, now: float) -> None:
-        elapsed = max(0.0, now - self._last_refill)
-        self._available_units = min(
-            self.capacity,
-            self._available_units + elapsed * self.refill_units_per_second,
-        )
-        self._last_refill = now
+    def _expire_consumption(self, now: float) -> None:
+        cutoff = now - self.rate_limit_window_seconds
+        while self._consumption and self._consumption[0][0] <= cutoff:
+            _timestamp, cost = self._consumption.popleft()
+            self._consumed_units -= cost
 
     @property
-    def consumed_units(self) -> float:
-        self._refill(self.clock())
-        return self.capacity - self._available_units
+    def consumed_units(self) -> int:
+        self._expire_consumption(self.clock())
+        return self._consumed_units
 
     @property
     def remaining_units(self) -> float:
-        self._refill(self.clock())
-        return self._available_units
+        return self.capacity - self.consumed_units
+
+    def _wait_until_available(self, now: float, cost: int) -> float:
+        remaining = self.capacity - self._consumed_units
+        for timestamp, consumed_cost in self._consumption:
+            remaining += consumed_cost
+            if remaining - cost > self.reserve_units:
+                return max(
+                    0.0,
+                    timestamp + self.rate_limit_window_seconds - now,
+                )
+        raise RuntimeError("throughput history cannot accommodate request")
 
     def wait(self, cost: int) -> None:
         if cost < 0:
@@ -103,18 +110,17 @@ class RateLimiter:
 
         while True:
             now = self.clock()
-            self._refill(now)
-            remaining_after_request = self._available_units - cost
+            self._expire_consumption(now)
+            remaining_after_request = (
+                self.capacity - self._consumed_units - cost
+            )
             if remaining_after_request > self.reserve_units:
-                self._available_units -= cost
+                self._consumption.append((now, cost))
+                self._consumed_units += cost
                 return
 
-            refill_wait = max(
-                0.0,
-                (cost + self.reserve_units - self._available_units)
-                / self.refill_units_per_second,
-            )
-            self.sleeper(max(self.wait_seconds, refill_wait))
+            rolling_window_wait = self._wait_until_available(now, cost)
+            self.sleeper(max(self.wait_seconds, rolling_window_wait))
 
 
 def block_windows(start: int, end: int, size: int) -> list[tuple[int, int]]:

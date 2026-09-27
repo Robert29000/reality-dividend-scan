@@ -201,13 +201,13 @@ class RpcTests(unittest.TestCase):
                 self.assertEqual(limiter.consumed_units, 80)
                 self.assertEqual(limiter.remaining_units, 20)
 
+                fake_time.now = period - 0.1
                 limiter.wait(10)
                 self.assertEqual(fake_time.sleeps, [0.25])
-                self.assertGreater(
-                    limiter.remaining_units, limiter.reserve_units
-                )
+                self.assertEqual(limiter.consumed_units, 10)
+                self.assertEqual(limiter.remaining_units, 90)
 
-    def test_token_bucket_refills_continuously_over_rolling_window(self):
+    def test_consumption_expires_only_after_leaving_rolling_window(self):
         fake_time = FakeTime()
         limiter = RateLimiter(
             throughput=100,
@@ -221,8 +221,30 @@ class RpcTests(unittest.TestCase):
         self.assertEqual(limiter.consumed_units, 800)
 
         fake_time.sleep(2)
-        self.assertEqual(limiter.consumed_units, 600)
-        self.assertEqual(limiter.remaining_units, 400)
+        self.assertEqual(limiter.consumed_units, 800)
+        self.assertEqual(limiter.remaining_units, 200)
+
+        fake_time.sleep(8)
+        self.assertEqual(limiter.consumed_units, 0)
+        self.assertEqual(limiter.remaining_units, 1_000)
+
+    def test_rolling_window_does_not_refill_after_initial_drpc_burst(self):
+        fake_time = FakeTime()
+        limiter = RateLimiter(
+            throughput=50_400,
+            throughput_rate_period_seconds=60,
+            rate_limit_window_seconds=60,
+            wait_seconds=1,
+            sleeper=fake_time.sleep,
+            clock=fake_time.clock,
+        )
+        limiter.wait(45_300)
+
+        fake_time.now = 7
+        limiter.wait(840)
+
+        self.assertEqual(fake_time.sleeps, [53])
+        self.assertEqual(limiter.consumed_units, 840)
 
     def test_throughput_limiter_rejects_request_larger_than_usable_budget(self):
         limiter = RateLimiter(
