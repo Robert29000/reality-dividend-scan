@@ -12,7 +12,12 @@ import requests
 from web3 import Web3
 from web3.exceptions import Web3Exception
 
-from .config import RPC_PROVIDER_CONFIGS, RpcProviderConfig, ThroughputMode
+from .config import (
+    REMAINING_THROUGHPUT_THRESHOLD,
+    RPC_PROVIDER_CONFIGS,
+    RpcProviderConfig,
+    ThroughputMode,
+)
 from .constants import (
     ACTION_EXECUTED_TOPIC,
     ACTION_UPDATED_TOPIC,
@@ -32,21 +37,19 @@ class RateLimiter:
         self,
         throughput: int,
         mode: ThroughputMode,
-        remaining_threshold: float,
         wait_seconds: float,
         sleeper: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if throughput <= 0:
             raise ValueError("throughput must be positive")
-        if not 0 <= remaining_threshold < 1:
+        if not 0 <= REMAINING_THROUGHPUT_THRESHOLD < 1:
             raise ValueError("remaining threshold must be between zero and one")
         if wait_seconds <= 0:
             raise ValueError("wait seconds must be positive")
 
         self.throughput = throughput
         self.period_seconds = mode.period_seconds
-        self.remaining_threshold = remaining_threshold
         self.wait_seconds = wait_seconds
         self.sleeper = sleeper
         self.clock = clock
@@ -55,7 +58,7 @@ class RateLimiter:
 
     @property
     def reserve_units(self) -> float:
-        return self.throughput * self.remaining_threshold
+        return self.throughput * REMAINING_THROUGHPUT_THRESHOLD
 
     @property
     def max_request_units(self) -> int:
@@ -139,7 +142,6 @@ class RpcCollector:
         self.limiter = RateLimiter(
             throughput=self.config.throughput,
             mode=self.config.throughput_mode,
-            remaining_threshold=self.config.remaining_threshold,
             wait_seconds=self.config.throttle_wait_seconds,
             sleeper=sleeper,
             clock=clock,

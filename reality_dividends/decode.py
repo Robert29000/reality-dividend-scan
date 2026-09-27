@@ -36,7 +36,9 @@ CSV_FIELDS = (
     "source_provider",
 )
 
-_ABI_PATH = Path(__file__).with_name("abi") / "reality_oracle_events.json"
+_ABI_PATH = (
+    Path(__file__).resolve().parent.parent / "abi" / "reality_oracle_events.json"
+)
 ORACLE_ABI = json.loads(_ABI_PATH.read_text(encoding="utf-8"))
 _WEB3 = Web3()
 _CONTRACT = _WEB3.eth.contract(

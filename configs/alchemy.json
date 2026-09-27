@@ -1,0 +1,13 @@
+{
+  "rpc_url_env": "ALCHEMY_RPC_URL",
+  "block_window": 10,
+  "batch_limit": 500,
+  "log_limit": 10000,
+  "throughput": 500,
+  "throughput_mode": "cu_per_second",
+  "throttle_wait_seconds": 1.0,
+  "chain_id_cu_cost": 5,
+  "block_number_cu_cost": 10,
+  "get_logs_cu_cost": 60,
+  "batch_base_cu_cost": 0
+}

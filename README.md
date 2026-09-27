@@ -31,19 +31,22 @@ The selected report and an automatic resumable scan checkpoint are written to
 
 Immutable chain, contract, and event values live in
 `reality_dividends/constants.py`. Provider-specific behavior lives in
-`reality_dividends/config.py`; each `RpcProviderConfig` defines the endpoint
-environment variable, block and batch limits, log cap, CU costs, throughput
-period, reserved-capacity threshold, and throttle wait.
+JSON files under the repository-level `configs/` directory.
+`reality_dividends/config.py` maps each provider to its JSON path, loads those
+files into `RpcProviderConfig` instances, and defines the shared
+remaining-throughput threshold.
 
-To add a provider, define its name in `constants.py`, create an
-`RpcProviderConfig` in `config.py`, include it in `RPC_PROVIDER_CONFIGS`, add its
+To add a provider, define its name in `constants.py`, add a JSON file under
+`configs/`, add its explicit path to `RPC_PROVIDER_CONFIG_PATHS`, add its
 endpoint variable to `.env.example`, and cover it in the RPC and CLI tests. The
-shared `RpcCollector` applies the provider's batching and throughput rules.
+shared `RpcCollector` applies its batching and throughput rules.
 
 ## Structure
 
 ```text
-reality_dividends/      CLI, ABI, RPC collection, decoding, checkpoints, output
+abi/                    Reality Finance event ABI
+configs/                Provider-specific RPC configuration
+reality_dividends/      CLI, RPC collection, decoding, checkpoints, output
 tests/                  Offline unit tests and event fixtures
 collect_dividends.py    Repository-local entry point
 ```

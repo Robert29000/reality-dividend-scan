@@ -17,6 +17,3 @@ collect-dividends = "reality_dividends.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["reality_dividends*"]
-
-[tool.setuptools.package-data]
-reality_dividends = ["abi/*.json"]

@@ -6,9 +6,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from reality_dividends.config import (
-    ALCHEMY_RPC_CONFIG,
-    DRPC_RPC_CONFIG,
+    REMAINING_THROUGHPUT_THRESHOLD,
     RPC_PROVIDER_CONFIGS,
+    RPC_PROVIDER_CONFIG_PATHS,
     ThroughputMode,
 )
 from reality_dividends.constants import (
@@ -105,28 +105,41 @@ class RpcTests(unittest.TestCase):
         return collector, eth, state, clock
 
     def test_provider_settings_are_selected_by_name(self):
-        self.assertIs(RPC_PROVIDER_CONFIGS[ALCHEMY_PROVIDER], ALCHEMY_RPC_CONFIG)
-        self.assertEqual(ALCHEMY_RPC_CONFIG.block_window, 10)
-        self.assertEqual(ALCHEMY_RPC_CONFIG.batch_limit, 500)
-        self.assertEqual(ALCHEMY_RPC_CONFIG.get_logs_cu_cost, 60)
-        self.assertEqual(ALCHEMY_RPC_CONFIG.throughput, 500)
+        alchemy_config = RPC_PROVIDER_CONFIGS[ALCHEMY_PROVIDER]
+        drpc_config = RPC_PROVIDER_CONFIGS[DRPC_PROVIDER]
+        self.assertEqual(
+            RPC_PROVIDER_CONFIG_PATHS[ALCHEMY_PROVIDER].name, "alchemy.json"
+        )
+        self.assertEqual(RPC_PROVIDER_CONFIG_PATHS[DRPC_PROVIDER].name, "drpc.json")
+        self.assertTrue(
+            all(
+                path.parent.name == "configs"
+                for path in RPC_PROVIDER_CONFIG_PATHS.values()
+            )
+        )
+        self.assertEqual(REMAINING_THROUGHPUT_THRESHOLD, 0.10)
+        self.assertFalse(hasattr(alchemy_config, "remaining_threshold"))
+        self.assertFalse(hasattr(drpc_config, "remaining_threshold"))
+        self.assertEqual(alchemy_config.block_window, 10)
+        self.assertEqual(alchemy_config.batch_limit, 500)
+        self.assertEqual(alchemy_config.get_logs_cu_cost, 60)
+        self.assertEqual(alchemy_config.throughput, 500)
         self.assertIs(
-            ALCHEMY_RPC_CONFIG.throughput_mode,
+            alchemy_config.throughput_mode,
             ThroughputMode.CU_PER_SECOND,
         )
-        self.assertEqual(ALCHEMY_RPC_CONFIG.get_logs_batch_cu_cost(3), 180)
+        self.assertEqual(alchemy_config.get_logs_batch_cu_cost(3), 180)
 
-        self.assertIs(RPC_PROVIDER_CONFIGS[DRPC_PROVIDER], DRPC_RPC_CONFIG)
-        self.assertEqual(DRPC_RPC_CONFIG.block_window, 100)
-        self.assertEqual(DRPC_RPC_CONFIG.batch_limit, 3)
-        self.assertEqual(DRPC_RPC_CONFIG.log_limit, 10_000)
-        self.assertEqual(DRPC_RPC_CONFIG.get_logs_cu_cost, 20)
-        self.assertEqual(DRPC_RPC_CONFIG.throughput, 50_400)
+        self.assertEqual(drpc_config.block_window, 100)
+        self.assertEqual(drpc_config.batch_limit, 3)
+        self.assertEqual(drpc_config.log_limit, 10_000)
+        self.assertEqual(drpc_config.get_logs_cu_cost, 20)
+        self.assertEqual(drpc_config.throughput, 50_400)
         self.assertIs(
-            DRPC_RPC_CONFIG.throughput_mode,
+            drpc_config.throughput_mode,
             ThroughputMode.CU_PER_MINUTE,
         )
-        self.assertEqual(DRPC_RPC_CONFIG.get_logs_batch_cu_cost(3), 60)
+        self.assertEqual(drpc_config.get_logs_batch_cu_cost(3), 60)
 
     def test_each_provider_uses_its_window_and_combined_topics(self):
         cases = ((ALCHEMY_PROVIDER, 81), (DRPC_PROVIDER, 2_001))
@@ -179,7 +192,6 @@ class RpcTests(unittest.TestCase):
                 limiter = RateLimiter(
                     throughput=100,
                     mode=mode,
-                    remaining_threshold=0.10,
                     wait_seconds=period,
                     sleeper=fake_time.sleep,
                     clock=fake_time.clock,
@@ -198,7 +210,6 @@ class RpcTests(unittest.TestCase):
         limiter = RateLimiter(
             throughput=100,
             mode=ThroughputMode.CU_PER_SECOND,
-            remaining_threshold=0.10,
             wait_seconds=1,
         )
         with self.assertRaisesRegex(ValueError, "exceeds usable throughput 89"):

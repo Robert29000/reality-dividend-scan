@@ -29,12 +29,7 @@ class TopicAndAbiTests(unittest.TestCase):
         self.assertEqual(event_topic(ACTION_EXECUTED_SIGNATURE), ACTION_EXECUTED_TOPIC)
 
     def test_corrected_minimal_abi_layout(self):
-        path = (
-            Path(__file__).parents[1]
-            / "reality_dividends"
-            / "abi"
-            / "reality_oracle_events.json"
-        )
+        path = Path(__file__).parents[1] / "abi" / "reality_oracle_events.json"
         abi = json.loads(path.read_text())
         self.assertEqual([event["name"] for event in abi], ["ActionUpdated", "ActionExecuted"])
         for event in abi:

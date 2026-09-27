@@ -1,0 +1,13 @@
+{
+  "rpc_url_env": "DRPC_RPC_URL",
+  "block_window": 100,
+  "batch_limit": 3,
+  "log_limit": 10000,
+  "throughput": 50400,
+  "throughput_mode": "cu_per_minute",
+  "throttle_wait_seconds": 60.0,
+  "chain_id_cu_cost": 10,
+  "block_number_cu_cost": 20,
+  "get_logs_cu_cost": 20,
+  "batch_base_cu_cost": 0
+}
