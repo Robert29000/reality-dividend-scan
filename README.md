@@ -29,20 +29,16 @@ collect-dividends range --provider drpc --output-type csv --from-block 469276570
 The selected report and an automatic resumable scan checkpoint are written to
 `output/`. Range scans must start at or after the oracle creation block.
 
-RPC behavior is configured in `reality_dividends/constants.py`:
+Immutable chain, contract, and event values live in
+`reality_dividends/constants.py`. Provider-specific behavior lives in
+`reality_dividends/config.py`; each `RpcProviderConfig` defines the endpoint
+environment variable, block and batch limits, log cap, CU costs, throughput
+period, reserved-capacity threshold, and throttle wait.
 
-- `RPC_URL_ENV` maps provider names to endpoint environment variables.
-- `RPC_BLOCK_WINDOWS` controls the inclusive block range in each `eth_getLogs`
-  call.
-- `RPC_BATCH_LIMITS` controls how many calls are grouped into one HTTP request.
-- `RPC_REQUEST_INTERVALS` controls request pacing.
-- `RPC_LOG_LIMITS` triggers recursive range splitting when a response reaches a
-  provider's result cap.
-
-To add a provider, define its name, add it to `RPC_PROVIDERS`, supply an entry in
-each RPC mapping above, add its endpoint variable to `.env.example`, and add the
-provider to the RPC and CLI test cases. The shared `RpcCollector` will then use
-the configured block window, batch size, pacing, and log limit automatically.
+To add a provider, define its name in `constants.py`, create an
+`RpcProviderConfig` in `config.py`, include it in `RPC_PROVIDER_CONFIGS`, add its
+endpoint variable to `.env.example`, and cover it in the RPC and CLI tests. The
+shared `RpcCollector` applies the provider's batching and throughput rules.
 
 ## Structure
 

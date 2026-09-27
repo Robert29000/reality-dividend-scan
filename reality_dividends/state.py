@@ -81,6 +81,9 @@ class ScanState:
         requested_from: int,
         requested_to: int,
     ) -> None:
+        if requested_to < requested_from:
+            raise StateError("requested end block must not precede start block")
+
         self.path = path
         if path.exists():
             try:
@@ -88,9 +91,15 @@ class ScanState:
             except (OSError, json.JSONDecodeError) as exc:
                 raise StateError(f"cannot read state file {path}: {exc}") from exc
             self._validate(provider, requested_from)
-            self.data["requested_to"] = max(
-                int(self.data.get("requested_to", requested_to)), requested_to
-            )
+            try:
+                stored_requested_to = int(self.data["requested_to"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise StateError(
+                    f"state file {path} has invalid requested_to"
+                ) from exc
+            expanded_requested_to = max(stored_requested_to, requested_to)
+            self.data["requested_to"] = expanded_requested_to
+            self._dirty = expanded_requested_to != stored_requested_to
         else:
             self.data = {
                 "schema_version": STATE_VERSION,
@@ -102,6 +111,7 @@ class ScanState:
                 "completed_ranges": [],
                 "records": [],
             }
+            self._dirty = True
 
     def _validate(self, provider: str, requested_from: int) -> None:
         expected = {
@@ -126,13 +136,26 @@ class ScanState:
     def completed_ranges(self) -> list[list[int]]:
         return merge_ranges(self.data.get("completed_ranges", []))
 
+    @property
+    def requested_to(self) -> int:
+        return int(self.data["requested_to"])
+
     def add_records(self, records: Iterable[dict[str, Any]]) -> None:
-        self.data["records"] = deduplicate_records([*self.records, *records])
+        updated = deduplicate_records([*self.records, *records])
+        if updated != self.data.get("records", []):
+            self.data["records"] = updated
+            self._dirty = True
 
     def complete(self, start: int, end: int) -> None:
-        self.data["completed_ranges"] = merge_ranges(
+        updated = merge_ranges(
             [*self.completed_ranges, [start, end]]
         )
+        if updated != self.data.get("completed_ranges", []):
+            self.data["completed_ranges"] = updated
+            self._dirty = True
 
     def save(self) -> None:
+        if not self._dirty:
+            return
         atomic_json(self.path, self.data)
+        self._dirty = False

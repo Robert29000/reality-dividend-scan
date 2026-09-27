@@ -3,7 +3,14 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from reality_dividends.config import (
+    ALCHEMY_RPC_CONFIG,
+    DRPC_RPC_CONFIG,
+    RPC_PROVIDER_CONFIGS,
+    ThroughputMode,
+)
 from reality_dividends.constants import (
     ACTION_EXECUTED_TOPIC,
     ACTION_UPDATED_TOPIC,
@@ -11,13 +18,10 @@ from reality_dividends.constants import (
     CHAIN_ID,
     DRPC_PROVIDER,
     ORACLE_ADDRESS,
-    RPC_BATCH_LIMITS,
-    RPC_BLOCK_WINDOWS,
-    RPC_LOG_LIMITS,
-    RPC_REQUEST_INTERVALS,
 )
 from reality_dividends.rpc import (
     CollectionError,
+    RateLimiter,
     RpcCollector,
     block_windows,
     window_batches,
@@ -83,47 +87,62 @@ class FakeWeb3:
 
 
 class RpcTests(unittest.TestCase):
-    def make_state(self, directory, provider, start=1, end=100):
-        return ScanState(Path(directory) / "state.json", provider, start, end)
-
-    def make_collector(self, directory, provider, handler, fake_time=None):
+    def make_collector(
+        self, directory, provider, handler, fake_time=None, start=1, end=100
+    ):
         clock = fake_time or FakeTime()
         eth = FakeEth(handler)
-        state = self.make_state(directory, provider)
         collector = RpcCollector(
             provider,
             "unused",
-            state,
             web3=FakeWeb3(eth),
             sleeper=clock.sleep,
             clock=clock.clock,
         )
+        state = collector.initialize_state(
+            Path(directory) / "state.json", start, end
+        )
         return collector, eth, state, clock
 
     def test_provider_settings_are_selected_by_name(self):
-        self.assertEqual(RPC_BLOCK_WINDOWS[ALCHEMY_PROVIDER], 10)
-        self.assertEqual(RPC_BATCH_LIMITS[ALCHEMY_PROVIDER], 1_000)
-        self.assertEqual(RPC_REQUEST_INTERVALS[ALCHEMY_PROVIDER], 0.2)
-        self.assertEqual(RPC_BLOCK_WINDOWS[DRPC_PROVIDER], 100)
-        self.assertEqual(RPC_BATCH_LIMITS[DRPC_PROVIDER], 3)
-        self.assertEqual(RPC_REQUEST_INTERVALS[DRPC_PROVIDER], 0.025)
-        self.assertEqual(RPC_LOG_LIMITS[DRPC_PROVIDER], 10_000)
+        self.assertIs(RPC_PROVIDER_CONFIGS[ALCHEMY_PROVIDER], ALCHEMY_RPC_CONFIG)
+        self.assertEqual(ALCHEMY_RPC_CONFIG.block_window, 10)
+        self.assertEqual(ALCHEMY_RPC_CONFIG.batch_limit, 500)
+        self.assertEqual(ALCHEMY_RPC_CONFIG.get_logs_cu_cost, 60)
+        self.assertEqual(ALCHEMY_RPC_CONFIG.throughput, 500)
+        self.assertIs(
+            ALCHEMY_RPC_CONFIG.throughput_mode,
+            ThroughputMode.CU_PER_SECOND,
+        )
+        self.assertEqual(ALCHEMY_RPC_CONFIG.get_logs_batch_cu_cost(3), 180)
+
+        self.assertIs(RPC_PROVIDER_CONFIGS[DRPC_PROVIDER], DRPC_RPC_CONFIG)
+        self.assertEqual(DRPC_RPC_CONFIG.block_window, 100)
+        self.assertEqual(DRPC_RPC_CONFIG.batch_limit, 3)
+        self.assertEqual(DRPC_RPC_CONFIG.log_limit, 10_000)
+        self.assertEqual(DRPC_RPC_CONFIG.get_logs_cu_cost, 20)
+        self.assertEqual(DRPC_RPC_CONFIG.throughput, 50_400)
+        self.assertIs(
+            DRPC_RPC_CONFIG.throughput_mode,
+            ThroughputMode.CU_PER_MINUTE,
+        )
+        self.assertEqual(DRPC_RPC_CONFIG.get_logs_batch_cu_cost(3), 60)
 
     def test_each_provider_uses_its_window_and_combined_topics(self):
-        cases = ((ALCHEMY_PROVIDER, 21), (DRPC_PROVIDER, 2_001))
+        cases = ((ALCHEMY_PROVIDER, 81), (DRPC_PROVIDER, 2_001))
         for provider, end in cases:
             with (
                 self.subTest(provider=provider),
                 tempfile.TemporaryDirectory() as directory,
             ):
                 collector, eth, state, fake_time = self.make_collector(
-                    directory, provider, lambda params: []
+                    directory, provider, lambda params: [], end=end
                 )
                 collector.validate_chain()
                 self.assertEqual(collector.head_block(), 100)
                 collector.collect(1, end)
 
-                expected = block_windows(1, end, RPC_BLOCK_WINDOWS[provider])
+                expected = block_windows(1, end, collector.block_window)
                 self.assertEqual(
                     [(call["fromBlock"], call["toBlock"]) for call in eth.calls],
                     expected,
@@ -139,21 +158,78 @@ class RpcTests(unittest.TestCase):
                     [
                         len(batch)
                         for batch in window_batches(
-                            expected, RPC_BATCH_LIMITS[provider]
+                            expected, collector.batch_limit
                         )
                     ],
                 )
-                expected_waited_requests = max(
-                    0, len(expected) - collector.web3.batch_sizes[-1]
+                expected_sleeps = [1.0] if provider == ALCHEMY_PROVIDER else []
+                self.assertEqual(fake_time.sleeps, expected_sleeps)
+                expected_consumed = 120 if provider == ALCHEMY_PROVIDER else 450
+                self.assertEqual(
+                    collector.limiter.consumed_units, expected_consumed
                 )
-                self.assertGreaterEqual(
-                    sum(fake_time.sleeps),
-                    expected_waited_requests * RPC_REQUEST_INTERVALS[provider],
+
+    def test_throughput_limiter_supports_second_and_minute_modes(self):
+        for mode, period in (
+            (ThroughputMode.CU_PER_SECOND, 1.0),
+            (ThroughputMode.CU_PER_MINUTE, 60.0),
+        ):
+            with self.subTest(mode=mode):
+                fake_time = FakeTime()
+                limiter = RateLimiter(
+                    throughput=100,
+                    mode=mode,
+                    remaining_threshold=0.10,
+                    wait_seconds=period,
+                    sleeper=fake_time.sleep,
+                    clock=fake_time.clock,
                 )
+                limiter.wait(40)
+                limiter.wait(40)
+                self.assertEqual(limiter.consumed_units, 80)
+                self.assertEqual(limiter.remaining_units, 20)
+
+                limiter.wait(10)
+                self.assertEqual(fake_time.sleeps, [period])
+                self.assertEqual(limiter.consumed_units, 10)
+                self.assertEqual(limiter.remaining_units, 90)
+
+    def test_throughput_limiter_rejects_request_larger_than_usable_budget(self):
+        limiter = RateLimiter(
+            throughput=100,
+            mode=ThroughputMode.CU_PER_SECOND,
+            remaining_threshold=0.10,
+            wait_seconds=1,
+        )
+        with self.assertRaisesRegex(ValueError, "exceeds usable throughput 89"):
+            limiter.wait(90)
+
+    def test_block_windows_cover_inclusive_range_without_gaps(self):
+        for start, end, size in ((5, 5, 10), (5, 14, 10), (5, 15, 10)):
+            with self.subTest(start=start, end=end, size=size):
+                windows = block_windows(start, end, size)
+                covered = [
+                    block
+                    for window_start, window_end in windows
+                    for block in range(window_start, window_end + 1)
+                ]
+                self.assertEqual(covered, list(range(start, end + 1)))
 
     def test_window_batches_rejects_invalid_size(self):
         with self.assertRaisesRegex(ValueError, "batch size must be positive"):
             window_batches([(1, 2)], 0)
+
+    def test_state_is_checkpointed_once_per_batch(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "reality_dividends.state.atomic_json"
+        ) as atomic_json:
+            collector, _eth, _state, _time = self.make_collector(
+                directory, DRPC_PROVIDER, lambda params: [], end=401
+            )
+            collector.collect(1, 401)
+
+            self.assertEqual(collector.web3.batch_sizes, [3, 2])
+            self.assertEqual(atomic_json.call_count, 2)
 
     def test_selected_provider_is_written_to_decoded_records(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -191,22 +267,35 @@ class RpcTests(unittest.TestCase):
 
     def test_resume_only_requests_uncovered_blocks(self):
         with tempfile.TemporaryDirectory() as directory:
-            state = self.make_state(directory, ALCHEMY_PROVIDER, 1, 20)
+            path = Path(directory) / "state.json"
+            state = ScanState(path, ALCHEMY_PROVIDER, 1, 20)
             state.complete(1, 10)
             state.save()
             eth = FakeEth(lambda params: [])
             collector = RpcCollector(
                 ALCHEMY_PROVIDER,
                 "unused",
-                state,
                 web3=FakeWeb3(eth),
                 sleeper=lambda _: None,
             )
+            state = collector.initialize_state(path, 1, 20)
             collector.collect(1, 20)
             self.assertEqual(
                 (eth.calls[0]["fromBlock"], eth.calls[0]["toBlock"]), (11, 20)
             )
             self.assertEqual(state.completed_ranges, [[1, 20]])
+
+    def test_collection_requires_state_but_rpc_lookups_do_not(self):
+        eth = FakeEth(lambda params: [], block_number=321)
+        collector = RpcCollector(
+            ALCHEMY_PROVIDER,
+            "unused",
+            web3=FakeWeb3(eth),
+        )
+        collector.validate_chain()
+        self.assertEqual(collector.head_block(), 321)
+        with self.assertRaisesRegex(CollectionError, "state is not configured"):
+            collector.collect(1, 1)
 
 
 if __name__ == "__main__":

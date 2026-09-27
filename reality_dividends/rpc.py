@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import requests
 from web3 import Web3
 from web3.exceptions import Web3Exception
 
+from .config import RPC_PROVIDER_CONFIGS, RpcProviderConfig, ThroughputMode
 from .constants import (
     ACTION_EXECUTED_TOPIC,
     ACTION_UPDATED_TOPIC,
     CHAIN_ID,
     ORACLE_ADDRESS,
-    RPC_BATCH_LIMITS,
-    RPC_BLOCK_WINDOWS,
-    RPC_LOG_LIMITS,
-    RPC_PROVIDERS,
-    RPC_REQUEST_INTERVALS,
 )
 from .decode import DecodeError, dividend_record
 from .state import ScanState, subtract_ranges
@@ -32,23 +30,74 @@ class CollectionError(RuntimeError):
 class RateLimiter:
     def __init__(
         self,
-        interval: float,
+        throughput: int,
+        mode: ThroughputMode,
+        remaining_threshold: float,
+        wait_seconds: float,
         sleeper: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self.interval = interval
+        if throughput <= 0:
+            raise ValueError("throughput must be positive")
+        if not 0 <= remaining_threshold < 1:
+            raise ValueError("remaining threshold must be between zero and one")
+        if wait_seconds <= 0:
+            raise ValueError("wait seconds must be positive")
+
+        self.throughput = throughput
+        self.period_seconds = mode.period_seconds
+        self.remaining_threshold = remaining_threshold
+        self.wait_seconds = wait_seconds
         self.sleeper = sleeper
         self.clock = clock
-        self.next_at: float | None = None
+        self.window_started = self.clock()
+        self._consumed_units = 0
 
-    def wait(self, request_count: int = 1) -> None:
-        if request_count <= 0:
-            raise ValueError("request count must be positive")
-        now = self.clock()
-        if self.next_at is not None and now < self.next_at:
-            self.sleeper(self.next_at - now)
+    @property
+    def reserve_units(self) -> float:
+        return self.throughput * self.remaining_threshold
+
+    @property
+    def max_request_units(self) -> int:
+        return max(0, math.ceil(self.throughput - self.reserve_units) - 1)
+
+    def _refresh(self, now: float) -> None:
+        if now - self.window_started >= self.period_seconds:
+            self.window_started = now
+            self._consumed_units = 0
+
+    @property
+    def consumed_units(self) -> int:
+        self._refresh(self.clock())
+        return self._consumed_units
+
+    @property
+    def remaining_units(self) -> int:
+        return self.throughput - self.consumed_units
+
+    def wait(self, cost: int) -> None:
+        if cost < 0:
+            raise ValueError("request cost must be non-negative")
+        if cost == 0:
+            return
+        if cost > self.max_request_units:
+            raise ValueError(
+                f"request cost {cost} exceeds usable throughput "
+                f"{self.max_request_units}"
+            )
+
+        while True:
             now = self.clock()
-        self.next_at = now + self.interval * request_count
+            self._refresh(now)
+            remaining_after_request = self.remaining_units - cost
+            if remaining_after_request > self.reserve_units:
+                self._consumed_units += cost
+                return
+
+            until_reset = max(
+                0.0, self.period_seconds - (now - self.window_started)
+            )
+            self.sleeper(min(self.wait_seconds, until_reset))
 
 
 def block_windows(start: int, end: int, size: int) -> list[tuple[int, int]]:
@@ -73,24 +122,52 @@ class RpcCollector:
         self,
         provider: str,
         rpc_url: str,
-        state: ScanState,
         web3: Web3 | Any | None = None,
         sleeper: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if provider not in RPC_PROVIDERS:
+        if provider not in RPC_PROVIDER_CONFIGS:
             raise ValueError(f"unsupported RPC provider: {provider}")
         self.provider = provider
-        self.state = state
-        self.block_window = RPC_BLOCK_WINDOWS[provider]
-        self.batch_limit = RPC_BATCH_LIMITS[provider]
-        self.log_limit = RPC_LOG_LIMITS[provider]
+        self.config: RpcProviderConfig = RPC_PROVIDER_CONFIGS[provider]
+        self._state: ScanState | None = None
+        self.block_window = self.config.block_window
+        self.log_limit = self.config.log_limit
         self.web3 = web3 or Web3(
             Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 30})
         )
-        self.limiter = RateLimiter(RPC_REQUEST_INTERVALS[provider], sleeper, clock)
+        self.limiter = RateLimiter(
+            throughput=self.config.throughput,
+            mode=self.config.throughput_mode,
+            remaining_threshold=self.config.remaining_threshold,
+            wait_seconds=self.config.throttle_wait_seconds,
+            sleeper=sleeper,
+            clock=clock,
+        )
+        max_batch_calls = (
+            self.limiter.max_request_units - self.config.batch_base_cu_cost
+        ) // self.config.get_logs_cu_cost
+        if max_batch_calls <= 0:
+            raise ValueError(
+                f"{provider} throughput cannot accommodate one eth_getLogs call"
+            )
+        self.batch_limit = min(self.config.batch_limit, max_batch_calls)
+
+    def initialize_state(
+        self, path: Path, requested_from: int, requested_to: int
+    ) -> ScanState:
+        self._state = ScanState(
+            path, self.provider, requested_from, requested_to
+        )
+        return self._state
+
+    def _require_state(self) -> ScanState:
+        if self._state is None:
+            raise CollectionError("scan state is not configured")
+        return self._state
 
     def validate_chain(self) -> None:
+        self.limiter.wait(self.config.chain_id_cu_cost)
         try:
             chain_id = int(self.web3.eth.chain_id)
         except (
@@ -106,6 +183,7 @@ class RpcCollector:
             )
 
     def head_block(self) -> int:
+        self.limiter.wait(self.config.block_number_cu_cost)
         try:
             return int(self.web3.eth.block_number)
         except (
@@ -135,7 +213,7 @@ class RpcCollector:
                 f"batch contains {len(windows)} requests; limit is {self.batch_limit}"
             )
 
-        self.limiter.wait(len(windows))
+        self.limiter.wait(self.config.get_logs_batch_cu_cost(len(windows)))
         try:
             with self.web3.batch_requests() as batch:
                 for start, end in windows:
@@ -162,6 +240,7 @@ class RpcCollector:
         return [list(logs) for logs in responses]
 
     def _store(self, start: int, end: int, logs: list[Any]) -> None:
+        state = self._require_state()
         records = []
         for log in logs:
             try:
@@ -172,9 +251,8 @@ class RpcCollector:
                 ) from exc
             if record is not None:
                 records.append(record)
-        self.state.add_records(records)
-        self.state.complete(start, end)
-        self.state.save()
+        state.add_records(records)
+        state.complete(start, end)
 
     def _process_window(self, start: int, end: int, logs: list[Any]) -> None:
         if self.log_limit is not None and len(logs) >= self.log_limit:
@@ -191,16 +269,22 @@ class RpcCollector:
         self._store(start, end, logs)
 
     def _collect_batch(self, windows: list[tuple[int, int]]) -> None:
-        for (start, end), logs in zip(windows, self._get_logs_batch(windows)):
-            self._process_window(start, end, logs)
+        state = self._require_state()
+        try:
+            for (start, end), logs in zip(windows, self._get_logs_batch(windows)):
+                self._process_window(start, end, logs)
+        finally:
+            state.save()
 
     def _collect_window(self, start: int, end: int) -> None:
         self._collect_batch([(start, end)])
 
     def collect(self, start: int, end: int) -> None:
+        state = self._require_state()
         for gap_start, gap_end in subtract_ranges(
-            start, end, self.state.completed_ranges
+            start, end, state.completed_ranges
         ):
             windows = block_windows(gap_start, gap_end, self.block_window)
             for batch in window_batches(windows, self.batch_limit):
                 self._collect_batch(batch)
+        state.save()

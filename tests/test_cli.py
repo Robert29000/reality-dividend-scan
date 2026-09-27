@@ -7,26 +7,35 @@ from pathlib import Path
 from unittest.mock import patch
 
 from reality_dividends import cli
+from reality_dividends.state import ScanState
 
 
 class FakeCollector:
     instances = []
 
-    def __init__(self, provider, rpc_url, state):
+    def __init__(self, provider, rpc_url):
         self.provider = provider
         self.rpc_url = rpc_url
-        self.state = state
+        self.initialized_state = None
+        self.head_lookups = 0
         self.__class__.instances.append(self)
 
     def validate_chain(self):
         pass
 
     def head_block(self):
+        self.head_lookups += 1
         return 462_326_600
 
+    def initialize_state(self, path, requested_from, requested_to):
+        self.initialized_state = ScanState(
+            path, self.provider, requested_from, requested_to
+        )
+        return self.initialized_state
+
     def collect(self, start, end):
-        self.state.complete(start, end)
-        self.state.save()
+        self.initialized_state.complete(start, end)
+        self.initialized_state.save()
 
 
 class CliTests(unittest.TestCase):
@@ -72,7 +81,16 @@ class CliTests(unittest.TestCase):
             states = list(output.glob(".*-state.json"))
             self.assertEqual(len(states), 1)
             self.assertNotIn("secret", states[0].read_text())
-            self.assertEqual(FakeCollector.instances[-1].provider, provider)
+            collector = FakeCollector.instances[-1]
+            self.assertEqual(collector.provider, provider)
+            self.assertIsNotNone(collector.initialized_state)
+            self.assertEqual(collector.head_lookups, 1 if mode == "creation" else 0)
+            expected_end = (
+                462_326_600
+                if mode == "creation"
+                else cli.CREATION_BLOCK + 9
+            )
+            self.assertEqual(collector.initialized_state.requested_to, expected_end)
 
     def test_all_mode_provider_combinations(self):
         for mode in ("creation", "range"):

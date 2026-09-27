@@ -8,10 +8,11 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from .constants import CREATION_BLOCK, RPC_PROVIDERS, RPC_URL_ENV
+from .config import RPC_PROVIDER_CONFIGS, RPC_PROVIDERS
+from .constants import CREATION_BLOCK
 from .output import write_csv, write_markdown
 from .rpc import CollectionError, RpcCollector
-from .state import ScanState, StateError
+from .state import StateError
 
 
 def nonnegative_int(value: str) -> int:
@@ -52,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _paths(args: argparse.Namespace, start: int, end: int | None) -> dict[str, Path]:
+def _paths(args: argparse.Namespace, start: int, end: int) -> dict[str, Path]:
     suffix = "creation" if args.mode == "creation" else f"{start}-{end}"
     return {
         "csv": args.output_dir / f"dividends-{args.provider}.csv",
@@ -63,34 +64,29 @@ def _paths(args: argparse.Namespace, start: int, end: int | None) -> dict[str, P
 
 def run(args: argparse.Namespace) -> int:
     start = CREATION_BLOCK if args.mode == "creation" else args.from_block
-    end = None if args.mode == "creation" else args.to_block
     if start < CREATION_BLOCK:
         raise CollectionError(
             f"--from-block must be greater than or equal to oracle creation block "
             f"{CREATION_BLOCK}"
         )
-    if end is not None and start > end:
+    if args.mode == "range" and start > args.to_block:
         raise CollectionError("--from-block must be less than or equal to --to-block")
 
-    rpc_url_name = RPC_URL_ENV[args.provider]
+    rpc_url_name = RPC_PROVIDER_CONFIGS[args.provider].rpc_url_env
     rpc_url = os.environ.get(rpc_url_name)
     if not rpc_url:
         raise CollectionError(f"{rpc_url_name} is required")
 
-    paths = _paths(args, start, end)
-    requested_end = end if end is not None else start
-    state = ScanState(paths["state"], args.provider, start, requested_end)
-    collector = RpcCollector(args.provider, rpc_url, state)
-
+    collector = RpcCollector(args.provider, rpc_url)
     collector.validate_chain()
-    if end is None:
-        end = collector.head_block()
-        if end < start:
-            raise CollectionError(
-                f"provider head {end} precedes oracle creation block {start}"
-            )
-        state.data["requested_to"] = max(int(state.data["requested_to"]), end)
-        state.save()
+    end = collector.head_block() if args.mode == "creation" else args.to_block
+    if end < start:
+        raise CollectionError(
+            f"provider head {end} precedes oracle creation block {start}"
+        )
+
+    paths = _paths(args, start, end)
+    state = collector.initialize_state(paths["state"], start, end)
 
     try:
         collector.collect(start, end)

@@ -10,36 +10,6 @@ CREATION_BLOCK = 462_326_591
 
 ALCHEMY_PROVIDER = "alchemy"
 DRPC_PROVIDER = "drpc"
-RPC_PROVIDERS = (ALCHEMY_PROVIDER, DRPC_PROVIDER)
-RPC_URL_ENV = {
-    ALCHEMY_PROVIDER: "ALCHEMY_RPC_URL",
-    DRPC_PROVIDER: "DRPC_RPC_URL",
-}
-
-# Alchemy's free plan limits eth_getLogs to 10 blocks per request.
-# dRPC has no documented block-range cap; 100 is a conservative window that
-# reduces the risk of its free-tier two-second timeout.
-RPC_BLOCK_WINDOWS = {
-    ALCHEMY_PROVIDER: 10,
-    DRPC_PROVIDER: 100,
-}
-
-# Maximum JSON-RPC calls per HTTP batch supported by each provider.
-RPC_BATCH_LIMITS = {
-    ALCHEMY_PROVIDER: 500,
-    DRPC_PROVIDER: 3,
-}
-
-# Conservative pacing derived from documented free-tier throughput and
-# per-request compute-unit costs.
-RPC_REQUEST_INTERVALS = {
-    ALCHEMY_PROVIDER: 0.2,
-    DRPC_PROVIDER: 0.025,
-}
-RPC_LOG_LIMITS = {
-    ALCHEMY_PROVIDER: None,
-    DRPC_PROVIDER: 10_000,
-}
 
 EVENT_TYPES = (
     "bytes32",
