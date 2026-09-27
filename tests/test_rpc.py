@@ -5,11 +5,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import requests
+
 from reality_dividends.config import (
     REMAINING_THROUGHPUT_THRESHOLD,
     RPC_PROVIDER_CONFIGS,
     RPC_PROVIDER_CONFIG_PATHS,
-    ThroughputMode,
 )
 from reality_dividends.constants import (
     ACTION_EXECUTED_TOPIC,
@@ -123,11 +124,10 @@ class RpcTests(unittest.TestCase):
         self.assertEqual(alchemy_config.block_window, 10)
         self.assertEqual(alchemy_config.batch_limit, 500)
         self.assertEqual(alchemy_config.get_logs_cu_cost, 60)
-        self.assertEqual(alchemy_config.throughput, 500)
-        self.assertIs(
-            alchemy_config.throughput_mode,
-            ThroughputMode.CU_PER_SECOND,
-        )
+        self.assertEqual(alchemy_config.throughput, 300)
+        self.assertEqual(alchemy_config.throughput_rate_period_seconds, 1.0)
+        self.assertEqual(alchemy_config.rate_limit_window_seconds, 10.0)
+        self.assertEqual(alchemy_config.throttle_wait_seconds, 1.0)
         self.assertEqual(alchemy_config.get_logs_batch_cu_cost(3), 180)
 
         self.assertEqual(drpc_config.block_window, 100)
@@ -135,10 +135,9 @@ class RpcTests(unittest.TestCase):
         self.assertEqual(drpc_config.log_limit, 10_000)
         self.assertEqual(drpc_config.get_logs_cu_cost, 20)
         self.assertEqual(drpc_config.throughput, 50_400)
-        self.assertIs(
-            drpc_config.throughput_mode,
-            ThroughputMode.CU_PER_MINUTE,
-        )
+        self.assertEqual(drpc_config.throughput_rate_period_seconds, 60.0)
+        self.assertEqual(drpc_config.rate_limit_window_seconds, 60.0)
+        self.assertEqual(drpc_config.throttle_wait_seconds, 1.0)
         self.assertEqual(drpc_config.get_logs_batch_cu_cost(3), 60)
 
     def test_each_provider_uses_its_window_and_combined_topics(self):
@@ -175,24 +174,21 @@ class RpcTests(unittest.TestCase):
                         )
                     ],
                 )
-                expected_sleeps = [1.0] if provider == ALCHEMY_PROVIDER else []
-                self.assertEqual(fake_time.sleeps, expected_sleeps)
-                expected_consumed = 120 if provider == ALCHEMY_PROVIDER else 450
+                self.assertEqual(fake_time.sleeps, [])
+                expected_consumed = 555 if provider == ALCHEMY_PROVIDER else 450
                 self.assertEqual(
                     collector.limiter.consumed_units, expected_consumed
                 )
 
-    def test_throughput_limiter_supports_second_and_minute_modes(self):
-        for mode, period in (
-            (ThroughputMode.CU_PER_SECOND, 1.0),
-            (ThroughputMode.CU_PER_MINUTE, 60.0),
-        ):
-            with self.subTest(mode=mode):
+    def test_throttle_wait_is_independent_from_throughput_period(self):
+        for period in (1.0, 60.0):
+            with self.subTest(period=period):
                 fake_time = FakeTime()
                 limiter = RateLimiter(
                     throughput=100,
-                    mode=mode,
-                    wait_seconds=period,
+                    throughput_rate_period_seconds=period,
+                    rate_limit_window_seconds=period,
+                    wait_seconds=0.25,
                     sleeper=fake_time.sleep,
                     clock=fake_time.clock,
                 )
@@ -202,18 +198,85 @@ class RpcTests(unittest.TestCase):
                 self.assertEqual(limiter.remaining_units, 20)
 
                 limiter.wait(10)
-                self.assertEqual(fake_time.sleeps, [period])
-                self.assertEqual(limiter.consumed_units, 10)
-                self.assertEqual(limiter.remaining_units, 90)
+                self.assertEqual(fake_time.sleeps, [0.25])
+                self.assertGreater(
+                    limiter.remaining_units, limiter.reserve_units
+                )
+
+    def test_token_bucket_refills_continuously_over_rolling_window(self):
+        fake_time = FakeTime()
+        limiter = RateLimiter(
+            throughput=100,
+            throughput_rate_period_seconds=1,
+            rate_limit_window_seconds=10,
+            wait_seconds=0.25,
+            sleeper=fake_time.sleep,
+            clock=fake_time.clock,
+        )
+        limiter.wait(800)
+        self.assertEqual(limiter.consumed_units, 800)
+
+        fake_time.sleep(2)
+        self.assertEqual(limiter.consumed_units, 600)
+        self.assertEqual(limiter.remaining_units, 400)
 
     def test_throughput_limiter_rejects_request_larger_than_usable_budget(self):
         limiter = RateLimiter(
             throughput=100,
-            mode=ThroughputMode.CU_PER_SECOND,
+            throughput_rate_period_seconds=1,
+            rate_limit_window_seconds=1,
             wait_seconds=1,
         )
         with self.assertRaisesRegex(ValueError, "exceeds usable throughput 89"):
             limiter.wait(90)
+
+    def test_http_429_hard_waits_and_honors_retry_after(self):
+        fake_time = FakeTime()
+        collector = RpcCollector(
+            ALCHEMY_PROVIDER,
+            "unused",
+            web3=FakeWeb3(FakeEth(lambda params: [])),
+            sleeper=fake_time.sleep,
+            clock=fake_time.clock,
+        )
+        attempts = 0
+
+        def request():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                response = requests.Response()
+                response.status_code = 429
+                response.headers["Retry-After"] = "2.5"
+                raise requests.HTTPError(response=response)
+            return "ok"
+
+        self.assertEqual(collector._rpc_request(5, request), "ok")
+        self.assertEqual(attempts, 2)
+        self.assertEqual(fake_time.sleeps, [2.5])
+
+    def test_429_retries_are_bounded(self):
+        fake_time = FakeTime()
+        collector = RpcCollector(
+            ALCHEMY_PROVIDER,
+            "unused",
+            web3=FakeWeb3(FakeEth(lambda params: [])),
+            sleeper=fake_time.sleep,
+            clock=fake_time.clock,
+        )
+        attempts = 0
+
+        def request():
+            nonlocal attempts
+            attempts += 1
+            response = requests.Response()
+            response.status_code = 429
+            raise requests.HTTPError(response=response)
+
+        with self.assertRaises(requests.HTTPError):
+            collector._rpc_request(5, request)
+        self.assertEqual(attempts, 6)
+        self.assertEqual(fake_time.sleeps, [1.0] * 5)
 
     def test_block_windows_cover_inclusive_range_without_gaps(self):
         for start, end, size in ((5, 5, 10), (5, 14, 10), (5, 15, 10)):

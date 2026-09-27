@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 
 from .constants import ALCHEMY_PROVIDER, DRPC_PROVIDER
@@ -17,15 +16,6 @@ RPC_PROVIDER_CONFIG_PATHS = {
 }
 
 
-class ThroughputMode(Enum):
-    CU_PER_SECOND = "cu_per_second"
-    CU_PER_MINUTE = "cu_per_minute"
-
-    @property
-    def period_seconds(self) -> float:
-        return 1.0 if self is ThroughputMode.CU_PER_SECOND else 60.0
-
-
 @dataclass(frozen=True)
 class RpcProviderConfig:
     rpc_url_env: str
@@ -33,7 +23,8 @@ class RpcProviderConfig:
     batch_limit: int
     log_limit: int | None
     throughput: int
-    throughput_mode: ThroughputMode
+    throughput_rate_period_seconds: float
+    rate_limit_window_seconds: float
     throttle_wait_seconds: float
     chain_id_cu_cost: int
     block_number_cu_cost: int
@@ -48,6 +39,10 @@ class RpcProviderConfig:
             raise ValueError("batch limit must be positive")
         if self.throughput <= 0:
             raise ValueError("throughput must be positive")
+        if self.throughput_rate_period_seconds <= 0:
+            raise ValueError("throughput rate period must be positive")
+        if self.rate_limit_window_seconds <= 0:
+            raise ValueError("rate limit window must be positive")
         if self.throttle_wait_seconds <= 0:
             raise ValueError("throttle wait must be positive")
         for cost in (
@@ -67,9 +62,7 @@ class RpcProviderConfig:
 
 
 def load_provider_config(path: Path) -> RpcProviderConfig:
-    values = json.loads(path.read_text(encoding="utf-8"))
-    values["throughput_mode"] = ThroughputMode(values["throughput_mode"])
-    return RpcProviderConfig(**values)
+    return RpcProviderConfig(**json.loads(path.read_text(encoding="utf-8")))
 
 
 RPC_PROVIDER_CONFIGS = {
