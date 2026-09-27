@@ -11,11 +11,17 @@ from reality_dividends.constants import (
     CHAIN_ID,
     DRPC_PROVIDER,
     ORACLE_ADDRESS,
+    RPC_BATCH_LIMITS,
     RPC_BLOCK_WINDOWS,
     RPC_LOG_LIMITS,
     RPC_REQUEST_INTERVALS,
 )
-from reality_dividends.rpc import CollectionError, RpcCollector, block_windows
+from reality_dividends.rpc import (
+    CollectionError,
+    RpcCollector,
+    block_windows,
+    window_batches,
+)
 from reality_dividends.state import ScanState
 from tests.fixtures import UPDATED_LOG
 
@@ -41,13 +47,39 @@ class FakeEth:
         self.calls = []
 
     def get_logs(self, params):
-        self.calls.append(dict(params))
-        return self.handler(params)
+        return dict(params)
+
+
+class FakeBatch:
+    def __init__(self, web3):
+        self.web3 = web3
+        self.requests = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        pass
+
+    def add(self, request):
+        self.requests.append(request)
+
+    def execute(self):
+        self.web3.batch_sizes.append(len(self.requests))
+        responses = []
+        for request in self.requests:
+            self.web3.eth.calls.append(request)
+            responses.append(self.web3.eth.handler(request))
+        return responses
 
 
 class FakeWeb3:
     def __init__(self, eth):
         self.eth = eth
+        self.batch_sizes = []
+
+    def batch_requests(self):
+        return FakeBatch(self)
 
 
 class RpcTests(unittest.TestCase):
@@ -70,8 +102,10 @@ class RpcTests(unittest.TestCase):
 
     def test_provider_settings_are_selected_by_name(self):
         self.assertEqual(RPC_BLOCK_WINDOWS[ALCHEMY_PROVIDER], 10)
+        self.assertEqual(RPC_BATCH_LIMITS[ALCHEMY_PROVIDER], 1_000)
         self.assertEqual(RPC_REQUEST_INTERVALS[ALCHEMY_PROVIDER], 0.2)
         self.assertEqual(RPC_BLOCK_WINDOWS[DRPC_PROVIDER], 100)
+        self.assertEqual(RPC_BATCH_LIMITS[DRPC_PROVIDER], 3)
         self.assertEqual(RPC_REQUEST_INTERVALS[DRPC_PROVIDER], 0.025)
         self.assertEqual(RPC_LOG_LIMITS[DRPC_PROVIDER], 10_000)
 
@@ -100,10 +134,26 @@ class RpcTests(unittest.TestCase):
                 )
                 self.assertEqual(eth.calls[0]["address"].lower(), ORACLE_ADDRESS)
                 self.assertEqual(state.completed_ranges, [[1, end]])
+                self.assertEqual(
+                    collector.web3.batch_sizes,
+                    [
+                        len(batch)
+                        for batch in window_batches(
+                            expected, RPC_BATCH_LIMITS[provider]
+                        )
+                    ],
+                )
+                expected_waited_requests = max(
+                    0, len(expected) - collector.web3.batch_sizes[-1]
+                )
                 self.assertGreaterEqual(
                     sum(fake_time.sleeps),
-                    (len(expected) - 1) * RPC_REQUEST_INTERVALS[provider],
+                    expected_waited_requests * RPC_REQUEST_INTERVALS[provider],
                 )
+
+    def test_window_batches_rejects_invalid_size(self):
+        with self.assertRaisesRegex(ValueError, "batch size must be positive"):
+            window_batches([(1, 2)], 0)
 
     def test_selected_provider_is_written_to_decoded_records(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -128,6 +178,7 @@ class RpcTests(unittest.TestCase):
                 [(call["fromBlock"], call["toBlock"]) for call in eth.calls],
                 [(1, 4), (1, 2), (3, 4)],
             )
+            self.assertEqual(collector.web3.batch_sizes, [1, 2])
             self.assertEqual(state.completed_ranges, [[1, 4]])
 
     def test_drpc_single_block_log_cap_is_explicit(self):

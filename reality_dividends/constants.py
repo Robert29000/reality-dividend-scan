@@ -24,6 +24,12 @@ RPC_BLOCK_WINDOWS = {
     DRPC_PROVIDER: 100,
 }
 
+# Maximum JSON-RPC calls per HTTP batch supported by each provider.
+RPC_BATCH_LIMITS = {
+    ALCHEMY_PROVIDER: 500,
+    DRPC_PROVIDER: 3,
+}
+
 # Conservative pacing derived from documented free-tier throughput and
 # per-request compute-unit costs.
 RPC_REQUEST_INTERVALS = {
