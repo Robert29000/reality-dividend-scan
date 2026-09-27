@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reality-dividends-research"
+version = "0.1.0"
+description = "Reality Finance dividend event collector"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.32,<3",
+    "web3>=8,<9",
+]
+
+[project.scripts]
+collect-dividends = "reality_dividends.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["reality_dividends*"]
+
+[tool.setuptools.package-data]
+reality_dividends = ["abi/*.json"]
