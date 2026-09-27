@@ -6,10 +6,10 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .constants import ALCHEMY_PROVIDER, DRPC_PROVIDER
-
 REMAINING_THROUGHPUT_THRESHOLD = 0.10
 _PROJECT_DIRECTORY = Path(__file__).resolve().parent.parent
+ALCHEMY_PROVIDER = "alchemy"
+DRPC_PROVIDER = "drpc"
 RPC_PROVIDER_CONFIG_PATHS = {
     ALCHEMY_PROVIDER: _PROJECT_DIRECTORY / "configs" / "alchemy.json",
     DRPC_PROVIDER: _PROJECT_DIRECTORY / "configs" / "drpc.json",

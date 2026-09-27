@@ -1,4 +1,4 @@
-"""Network, oracle, and RPC provider constants."""
+"""Network, oracle, and event constants."""
 
 from __future__ import annotations
 
@@ -7,9 +7,6 @@ from web3 import Web3
 CHAIN_ID = 42161
 ORACLE_ADDRESS = "0xd01f8aa971a3f4d13d52299bdd30225b1d7f40f1"
 CREATION_BLOCK = 462_326_591
-
-ALCHEMY_PROVIDER = "alchemy"
-DRPC_PROVIDER = "drpc"
 
 EVENT_TYPES = (
     "bytes32",

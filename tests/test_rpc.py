@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from reality_dividends.config import (
+    ALCHEMY_PROVIDER,
+    DRPC_PROVIDER,
     REMAINING_THROUGHPUT_THRESHOLD,
     RPC_PROVIDER_CONFIGS,
     RPC_PROVIDER_CONFIG_PATHS,
@@ -13,9 +15,7 @@ from reality_dividends.config import (
 from reality_dividends.constants import (
     ACTION_EXECUTED_TOPIC,
     ACTION_UPDATED_TOPIC,
-    ALCHEMY_PROVIDER,
     CHAIN_ID,
-    DRPC_PROVIDER,
     ORACLE_ADDRESS,
 )
 from reality_dividends.rpc import (

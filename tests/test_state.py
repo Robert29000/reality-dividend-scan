@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from reality_dividends.constants import ALCHEMY_PROVIDER
+from reality_dividends.config import ALCHEMY_PROVIDER
 from reality_dividends.state import ScanState, StateError
 
 
